@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# macOS
+.DS_Store
+
+# Training data and model artifacts (use a model/data host for these)
+/outputs/
+/data_generation/*.jsonl
+
+# Evaluation response dumps can contain every generated response and are
+# reproducible from the evaluation scripts.
+/results/evaluations/
+
+# Local environments and editor files
+.venv/
+venv/
+env/
+.env
+.idea/
+.vscode/

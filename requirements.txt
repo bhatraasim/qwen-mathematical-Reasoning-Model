@@ -1,0 +1,5 @@
+# Install a PyTorch build that matches your operating system and accelerator first.
+transformers==5.17.0
+datasets==5.0.1
+peft==0.20.0
+trl==1.13.0
