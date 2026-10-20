@@ -2,32 +2,39 @@
 """
 Unified GSM8K evaluation for every stage of the pipeline.
 
-Usage examples (run each as its own process):
+Usage examples (run each as its own process, from the repository root):
 
   # GRPO model
-  python evaluate_all.py --adapter outputs/grpo_tagged
+  python -m scripts.evaluate_all --adapter outputs/grpo_tagged
 
   # SFT model (for the baseline comparison)
-  python evaluate_all.py --adapter outputs/sft_distilled_tagged
+  python -m scripts.evaluate_all --adapter outputs/sft_distilled_tagged
 
   # Base model, same tagged prompt as the trained models
-  python evaluate_all.py --adapter none
+  python -m scripts.evaluate_all --adapter none
 
   # Base model with the ORIGINAL harness prompt (reproduces your ~38% number)
-  python evaluate_all.py --adapter none --prompt_style legacy
+  python -m scripts.evaluate_all --adapter none --prompt_style legacy
 
   # Quick smoke test on a subset
-  python evaluate_all.py --adapter outputs/grpo_tagged --num_examples 100
+  python -m scripts.evaluate_all --adapter outputs/grpo_tagged --num_examples 100
 
 Every run uses greedy decoding, the same test split, and the same
 extraction logic, so the numbers are directly comparable. Each run also
-writes a JSON file with every raw response for manual inspection.
+writes a JSON file with every raw response for manual inspection, plus a
+manifest_eval_*.json sidecar recording the adapter, prompt hash, split,
+decoding settings, package versions, and git commit.
 """
 
 import argparse
+import hashlib
 import json
 import math
+import platform
 import re
+import subprocess
+from datetime import datetime, timezone
+from importlib import metadata as importlib_metadata
 from pathlib import Path
 
 import torch
@@ -91,6 +98,38 @@ def wilson_interval(correct, total, z=1.96):
     return centre - margin, centre + margin
 
 
+def sha256_file(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def git_sha():
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], text=True, stderr=subprocess.DEVNULL
+        ).strip()
+    except Exception:
+        return None
+
+
+def package_version(name):
+    try:
+        return importlib_metadata.version(name)
+    except importlib_metadata.PackageNotFoundError:
+        return None
+
+
+def generated_length(token_ids, eos_token_id):
+    """Generated tokens up to and including the first EOS, plus whether EOS was emitted."""
+    ids = token_ids.tolist()
+    if eos_token_id is not None and eos_token_id in ids:
+        return ids.index(eos_token_id) + 1, True
+    return len(ids), False
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--adapter", default="outputs/grpo_tagged",
@@ -101,13 +140,34 @@ def main():
     parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--max_new_tokens", type=int, default=640)
     parser.add_argument("--out", default=None, help="Where to save raw responses (JSON)")
+    parser.add_argument("--run_name", default=None,
+                        help="Label for this run (used in the default output filename)")
+    parser.add_argument("--overwrite", action="store_true",
+                        help="Allow overwriting an existing output file")
     args = parser.parse_args()
 
     use_adapter = args.adapter.lower() != "none"
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
+    default_label = "base" if not use_adapter else args.adapter.strip("/").split("/")[-1]
+    run_label = args.run_name or default_label
+    out_path = args.out or str(
+        Path("results/evaluations") / f"eval_{run_label}_{args.prompt_style}.json"
+    )
+    out_stem = Path(out_path).stem
+    run_name = out_stem[len("eval_"):] if out_stem.startswith("eval_") else out_stem
+
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    if Path(out_path).exists() and not args.overwrite:
+        raise SystemExit(
+            f"Refusing to overwrite existing results: {out_path}\n"
+            "Use --overwrite or pass a new --out path."
+        )
+
     print(f"Model:        {'base' if not use_adapter else args.adapter}")
     print(f"Prompt style: {args.prompt_style}")
+    print(f"Run name:     {run_name}")
+    print(f"Output:       {out_path}")
 
 
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, padding_side="left")   
@@ -169,7 +229,7 @@ def main():
 
         for j in range(len(questions)):
             generated = outputs[j][inputs["input_ids"].shape[1]:]
-            n_tokens = int((generated != tokenizer.pad_token_id).sum().item())
+            n_tokens, ended_with_eos = generated_length(generated, tokenizer.eos_token_id)
             response = tokenizer.decode(generated, skip_special_tokens=True)
 
             predicted, pattern = extract_answer(response)
@@ -177,7 +237,7 @@ def main():
             is_correct = numeric_equal(predicted, actual)
 
             is_well_formed = bool(STRICT_FORMAT_RE.match(response))
-            hit_limit = n_tokens >= args.max_new_tokens
+            hit_limit = (not ended_with_eos) and n_tokens >= args.max_new_tokens
 
             correct += is_correct
             well_formed += is_well_formed
@@ -200,16 +260,50 @@ def main():
     accuracy = correct / total
     lo, hi = wilson_interval(correct, total)
 
-    out_path = args.out or str(
-        Path("results/evaluations")
-        / (
-            "eval_" + ("base" if not use_adapter else args.adapter.strip("/").split("/")[-1])
-            + f"_{args.prompt_style}.json"
-        )
-    )
-    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     with open(out_path, "w") as f:
         json.dump(records, f, indent=2)
+
+    adapter_path = Path(args.adapter) / "adapter_model.safetensors" if use_adapter else None
+    prompt_template = (
+        SYSTEM_PROMPT + "\n\n" + build_user_prompt("{question}")
+        if args.prompt_style == "tagged"
+        else legacy_user_prompt("{question}")
+    )
+    manifest = {
+        "run_name": run_name,
+        "created_utc": datetime.now(timezone.utc).isoformat(),
+        "git_sha": git_sha(),
+        "model": MODEL_NAME,
+        "adapter": args.adapter if use_adapter else None,
+        "adapter_sha256": (
+            sha256_file(adapter_path)
+            if adapter_path is not None and adapter_path.exists()
+            else None
+        ),
+        "prompt_style": args.prompt_style,
+        "prompt_sha256": hashlib.sha256(prompt_template.encode()).hexdigest(),
+        "dataset": "openai/gsm8k",
+        "split": "test",
+        "num_examples": total,
+        "num_examples_requested": args.num_examples,
+        "decoding": "greedy",
+        "batch_size": args.batch_size,
+        "max_new_tokens": args.max_new_tokens,
+        "device": device,
+        "gpu": torch.cuda.get_device_name(0) if device == "cuda" else None,
+        "dtype": str(next(model.parameters()).dtype),
+        "versions": {
+            "python": platform.python_version(),
+            "torch": torch.__version__,
+            "transformers": package_version("transformers"),
+            "peft": package_version("peft"),
+            "datasets": package_version("datasets"),
+            "trl": package_version("trl"),
+        },
+    }
+    manifest_path = Path(out_path).with_name(f"manifest_{out_stem}.json")
+    with open(manifest_path, "w") as f:
+        json.dump(manifest, f, indent=2)
 
     patterns_used = {}
     for r in records:
@@ -224,6 +318,7 @@ def main():
     print(f"Hit token limit:    {truncated}/{total} ({truncated / total * 100:.1f}%)")
     print(f"Answer patterns:    {patterns_used}")
     print(f"Raw responses saved to: {out_path}")
+    print(f"Manifest saved to:      {manifest_path}")
 
 
 if __name__ == "__main__":

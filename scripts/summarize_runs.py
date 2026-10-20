@@ -48,6 +48,19 @@ def run_name(path):
     return stem[len("eval_"):] if stem.startswith("eval_") else stem
 
 
+def manifest_for(path):
+    stem = os.path.splitext(os.path.basename(path))[0]
+    return os.path.join(os.path.dirname(path), f"manifest_{stem}.json")
+
+
+def load_manifest(path):
+    manifest_path = manifest_for(path)
+    if not os.path.exists(manifest_path):
+        return {}
+    with open(manifest_path) as f:
+        return json.load(f)
+
+
 def sort_key(name):
     """Pipeline order: base, SFT, GRPO checkpoints by step, then anything else."""
     m = re.search(r"checkpoint-(\d+)", name)
@@ -63,6 +76,7 @@ def sort_key(name):
 def load_run(path):
     with open(path) as f:
         records = json.load(f)
+    manifest = load_manifest(path)
 
     strict, flex = {}, {}
     well_formed = token_limit = no_match = 0
@@ -77,6 +91,9 @@ def load_run(path):
         tokens.append(r["response_tokens"])
 
     return {
+        "adapter": (manifest.get("adapter") or "base") if manifest else "?",
+        "prompt": manifest.get("prompt_style", "?"),
+        "split": manifest.get("split", "?"),
         "n": len(records),
         "strict": strict,
         "flex": flex,
@@ -130,6 +147,9 @@ def main():
         f_lo, f_hi = wilson_interval(fc, n)
         rows.append({
             "run": name,
+            "adapter": r["adapter"],
+            "prompt": r["prompt"],
+            "split": r["split"],
             "n": n,
             "strict_acc": sc / n * 100,
             "strict_ci_lo": s_lo * 100,
@@ -142,6 +162,23 @@ def main():
             "no_match": r["no_match"],
             "mean_tokens": r["mean_tokens"],
         })
+
+    # ---- provenance checks ----
+    unknown = [r["run"] for r in rows if r["adapter"] == "?"]
+    if unknown:
+        print(
+            "WARNING: no manifest found for "
+            f"{', '.join(unknown)}; Adapter/Prompt/Split show '?'."
+        )
+    prompts = sorted({r["prompt"] for r in rows if r["prompt"] != "?"})
+    splits = sorted({r["split"] for r in rows if r["split"] != "?"})
+    sizes = sorted({r["n"] for r in rows})
+    if len(prompts) > 1:
+        print(f"WARNING: runs use different prompt styles: {prompts}; accuracy is not directly comparable.")
+    if len(splits) > 1:
+        print(f"WARNING: runs use different splits: {splits}; accuracy is not directly comparable.")
+    if len(sizes) > 1:
+        print(f"WARNING: runs use different example counts: {sizes}; compare with care.")
 
     # ---- paired comparison vs reference ----
     ref_run = runs[ref]
@@ -157,12 +194,13 @@ def main():
     md = []
     md.append("# Evaluation summary\n")
     md.append("## Accuracy by run\n")
-    md.append("| Run | N | Strict acc | Strict 95% CI | Flexible acc | Flexible 95% CI "
-              "| Well-formed | Hit token limit | no_match | Mean tokens |")
-    md.append("|---|---|---|---|---|---|---|---|---|---|")
+    md.append("| Run | Adapter | Prompt | Split | N | Strict acc | Strict 95% CI "
+              "| Flexible acc | Flexible 95% CI | Well-formed | Hit token limit | no_match | Mean tokens |")
+    md.append("|---|---|---|---|---|---|---|---|---|---|---|---|---|")
     for r in rows:
         md.append(
-            f"| {r['run']} | {r['n']} | {r['strict_acc']:.2f}% "
+            f"| {r['run']} | {r['adapter']} | {r['prompt']} | {r['split']} | {r['n']} "
+            f"| {r['strict_acc']:.2f}% "
             f"| {r['strict_ci_lo']:.1f}-{r['strict_ci_hi']:.1f}% "
             f"| {r['flex_acc']:.2f}% "
             f"| {r['flex_ci_lo']:.1f}-{r['flex_ci_hi']:.1f}% "
@@ -185,10 +223,16 @@ def main():
         "saved responses with a lenient extractor (units, dollar signs, last-number fallback). "
         "The last two columns use flexible scoring. p-values are exact McNemar tests on the "
         "questions where the two runs disagree; they are not corrected for multiple "
-        "comparisons, so treat p just under 0.05 with caution."
+        "comparisons, so treat p just under 0.05 with caution. "
+        "Adapter/Prompt/Split come from the `manifest_<run>.json` sidecar written by "
+        "evaluate_all.py; '?' means the run predates the manifest."
     )
 
     md_text = "\n".join(md) + "\n"
+
+    out_dir = os.path.dirname(args.out)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
 
     with open(f"{args.out}.md", "w") as f:
         f.write(md_text)

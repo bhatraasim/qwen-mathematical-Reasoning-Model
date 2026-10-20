@@ -1,5 +1,0 @@
-run,n,strict_acc,strict_ci_lo,strict_ci_hi,flex_acc,flex_ci_lo,flex_ci_hi,well_formed_pct,token_limit_pct,no_match,mean_tokens
-base_legacy,1319,39.955,37.344,42.623,43.063,40.415,45.752,0.0,3.26,159,332.412
-sft_distilled_tagged_tagged,1319,42.153,39.515,44.837,42.229,39.59,44.913,96.74,1.365,26,313.601
-checkpoint-100_tagged,1319,42.835,40.19,45.523,43.063,40.415,45.752,97.65,1.44,26,318.143
-checkpoint-200_tagged,1319,44.958,42.292,47.654,45.11,42.443,47.806,97.574,1.82,29,311.054
