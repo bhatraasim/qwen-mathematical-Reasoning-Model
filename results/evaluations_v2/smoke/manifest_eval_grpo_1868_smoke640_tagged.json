@@ -1,0 +1,42 @@
+{
+  "run_name": "grpo_1868_smoke640_tagged",
+  "created_utc": "2026-10-20T15:36:55.892928+00:00",
+  "git_sha": "f2b3e93a82a888d922a163713260d8028ee02881",
+  "git_dirty": true,
+  "eval_script_sha256": "b1e2c9ae92cd695117a692344d3c9cf5536f4cc5c20c181612bb88243a38e5ae",
+  "model": "Qwen/Qwen2.5-0.5B-Instruct",
+  "adapter": "outputs/grpo_tagged",
+  "adapter_sha256": "bcc2b4c217409f4a8661d7ba0fac21a40d250eef9b33a3e4b5e867742d3a5028",
+  "prompt_style": "tagged",
+  "prompt_sha256": "2b4fec1b183b89405137df4dcecf4c5330d2ffe2230b594aed8964c25661652d",
+  "dataset": "openai/gsm8k",
+  "split": "test",
+  "num_examples": 20,
+  "num_examples_requested": 20,
+  "decoding": "greedy",
+  "batch_size": 4,
+  "max_new_tokens": 640,
+  "device": "mps",
+  "gpu": null,
+  "dtype": "torch.float32",
+  "versions": {
+    "python": "3.14.3",
+    "torch": "2.14.1",
+    "transformers": "5.20.2",
+    "peft": "0.21.2",
+    "datasets": "5.1.0",
+    "trl": null
+  },
+  "metrics": {
+    "correct": 8,
+    "accuracy_pct": 40.0,
+    "accuracy_ci95_pct": [
+      21.88,
+      61.342
+    ],
+    "well_formed_pct": 100.0,
+    "hit_token_limit_pct": 0.0,
+    "no_match": 0,
+    "mean_response_tokens": 312.2
+  }
+}

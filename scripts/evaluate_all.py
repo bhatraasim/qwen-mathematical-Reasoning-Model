@@ -95,7 +95,7 @@ def wilson_interval(correct, total, z=1.96):
     denom = 1 + z**2 / total
     centre = (p + z**2 / (2 * total)) / denom
     margin = z * math.sqrt(p * (1 - p) / total + z**2 / (4 * total**2)) / denom
-    return centre - margin, centre + margin
+    return max(0.0, centre - margin), min(1.0, centre + margin)
 
 
 def sha256_file(path):
@@ -111,6 +111,16 @@ def git_sha():
         return subprocess.check_output(
             ["git", "rev-parse", "HEAD"], text=True, stderr=subprocess.DEVNULL
         ).strip()
+    except Exception:
+        return None
+
+
+def git_dirty():
+    try:
+        status = subprocess.check_output(
+            ["git", "status", "--porcelain"], text=True, stderr=subprocess.DEVNULL
+        )
+        return bool(status.strip())
     except Exception:
         return None
 
@@ -137,7 +147,7 @@ def main():
     parser.add_argument("--prompt_style", choices=["tagged", "legacy"], default="tagged")
     parser.add_argument("--num_examples", type=int, default=None,
                         help="Subset size; default = full 1319-question test set")
-    parser.add_argument("--batch_size", type=int, default=32)
+    parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--max_new_tokens", type=int, default=640)
     parser.add_argument("--out", default=None, help="Where to save raw responses (JSON)")
     parser.add_argument("--run_name", default=None,
@@ -147,7 +157,13 @@ def main():
     args = parser.parse_args()
 
     use_adapter = args.adapter.lower() != "none"
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    if torch.cuda.is_available():
+        device = "cuda"
+    elif torch.backends.mps.is_available():
+        device = "mps"
+    else:
+        device = "cpu"
 
     default_label = "base" if not use_adapter else args.adapter.strip("/").split("/")[-1]
     run_label = args.run_name or default_label
@@ -273,6 +289,8 @@ def main():
         "run_name": run_name,
         "created_utc": datetime.now(timezone.utc).isoformat(),
         "git_sha": git_sha(),
+        "git_dirty": git_dirty(),
+        "eval_script_sha256": sha256_file(Path(__file__).resolve()),
         "model": MODEL_NAME,
         "adapter": args.adapter if use_adapter else None,
         "adapter_sha256": (
@@ -300,6 +318,17 @@ def main():
             "datasets": package_version("datasets"),
             "trl": package_version("trl"),
         },
+        "metrics": {
+            "correct": correct,
+            "accuracy_pct": round(accuracy * 100, 3),
+            "accuracy_ci95_pct": [round(lo * 100, 3), round(hi * 100, 3)],
+            "well_formed_pct": round(well_formed / total * 100, 3),
+            "hit_token_limit_pct": round(truncated / total * 100, 3),
+            "no_match": sum(1 for r in records if r["pattern"] == "no_match"),
+            "mean_response_tokens": round(
+                sum(r["response_tokens"] for r in records) / total, 1
+            ),
+        },
     }
     manifest_path = Path(out_path).with_name(f"manifest_{out_stem}.json")
     with open(manifest_path, "w") as f:
@@ -316,6 +345,12 @@ def main():
     print(f"Accuracy:           {accuracy * 100:.2f}%   (95% CI: {lo * 100:.1f}% - {hi * 100:.1f}%)")
     print(f"Well-formed output: {well_formed}/{total} ({well_formed / total * 100:.1f}%)")
     print(f"Hit token limit:    {truncated}/{total} ({truncated / total * 100:.1f}%)")
+    if total and truncated / total > 0.05:
+        print(
+            f"\nWARNING: {truncated}/{total} responses hit the "
+            f"{args.max_new_tokens}-token limit. Accuracy is not meaningful at this "
+            "truncation rate; increase --max_new_tokens (640+ for the tagged format)."
+        )
     print(f"Answer patterns:    {patterns_used}")
     print(f"Raw responses saved to: {out_path}")
     print(f"Manifest saved to:      {manifest_path}")

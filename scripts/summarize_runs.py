@@ -40,7 +40,7 @@ def wilson_interval(correct, total, z=1.96):
     denom = 1 + z**2 / total
     centre = (p + z**2 / (2 * total)) / denom
     margin = z * math.sqrt(p * (1 - p) / total + z**2 / (4 * total**2)) / denom
-    return centre - margin, centre + margin
+    return max(0.0, centre - margin), min(1.0, centre + margin)
 
 
 def run_name(path):
@@ -179,6 +179,10 @@ def main():
         print(f"WARNING: runs use different splits: {splits}; accuracy is not directly comparable.")
     if len(sizes) > 1:
         print(f"WARNING: runs use different example counts: {sizes}; compare with care.")
+    high_trunc = [(r["run"], r["token_limit_pct"]) for r in rows if r["token_limit_pct"] > 5]
+    if high_trunc:
+        detail = ", ".join(f"{name} ({pct:.1f}%)" for name, pct in high_trunc)
+        print(f"WARNING: high token-limit rate: {detail}; accuracy may be truncated.")
 
     # ---- paired comparison vs reference ----
     ref_run = runs[ref]
@@ -207,6 +211,10 @@ def main():
             f"| {r['well_formed_pct']:.1f}% | {r['token_limit_pct']:.1f}% "
             f"| {r['no_match']} | {r['mean_tokens']:.0f} |"
         )
+
+    if high_trunc:
+        detail = ", ".join(f"{name} ({pct:.1f}%)" for name, pct in high_trunc)
+        md.append(f"\n> **Warning:** high token-limit rate: {detail}. Accuracy may be truncated.")
 
     md.append(f"\n## Paired comparison vs `{ref}`\n")
     md.append("| Run | Change (strict) | p (strict) | Change (flexible) | p (flexible) "
